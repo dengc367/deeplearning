@@ -24,7 +24,7 @@ class MaskZero(Layer):
 class ListMeanPooling(Layer):
     def __init__(self, **kwargs):
         super(ListMeanPooling, self).__init__(**kwargs)
-        self.epsilon = tf.constant(1e-12, dtype=tf.float32)
+        self.epsilon = 1e-12
 
     def build(self, input_shape):
         super().build(input_shape)
@@ -43,7 +43,7 @@ class ListMeanPooling(Layer):
 
         inputs_sum = tf.reduce_sum(inputs * mask, axis=0, keepdims=False)
         mask_sum = tf.reduce_sum(mask, axis=0, keepdims=False)
-        mean = tf.divide(inputs_sum, tf.math.maximum(mask_sum, self.epsilon))
+        mean = tf.divide(inputs_sum, tf.math.maximum(mask_sum, tf.constant(self.epsilon, dtype=tf.float32)))
         return mean
 
     def compute_output_shape(self, input_shape):

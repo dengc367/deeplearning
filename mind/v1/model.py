@@ -1,65 +1,93 @@
 import os
-from typing import List, Tuple
 import tensorflow as tf
-from absl import logging
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, Input, concatenate
-from mind.layers import SequencePoolingLayer, CapsuleLayer, LabelAwareAttention
-from mind.features import Feature, FeatureBuilder, SparseFeature
+from tensorflow.keras.layers import Embedding, Dense, concatenate, Input
+from mind.layers import MaskZero, ListMeanPooling, SplitString, LookupTable, SequencePoolingLayer, CapsuleLayer, LabelAwareAttention
 
 
 class MIND(object):
-    def __init__(self, features: Tuple[List[Feature]],
-                 hist_max_len=10, num_sampled=4,
+    def __init__(self, vocab_paths, num_vocabs, embedding_dims, hist_max_len=10, num_sampled=4,
                  dynamic_k=False, k_max=3, p=1.0, user_dnn_hidden_units=(64, 32),
-                 kernal_regularizer=None, model_name='mind_model'):
-        if len(features) == 3:
-            user_features, item_features, neg_item_features = features
-        else:
-            raise ValueError('features tuple is only three grams (user_features, item_features, neg_item_features).')
-        if len(item_features) > 1 and len(neg_item_features) > 1:
-            raise ValueError("Now MIND item_features only support 1 item feature like item_id, the same as neg_item_features.")
-        self.feature_builder = FeatureBuilder(user_features + item_features + neg_item_features)
-        self.item_feature = item_features[0]
+                 embeddings_regularizer=None, kernal_regularizer=None, model_name='mind_model'):
 
+        user_feature_names = ['user_id', 'user_type', 'member_level']
+        item_feature_names = ['product_id', 'first_class_id', 'second_class_id', 'third_class_id', 'brand_id']
+
+        self.split_string_layers = {'item_id': SplitString(item_feature_names, name='split_item_id')}
+
+        self.lookup_table_layers = {feature_name: LookupTable(vocab_paths[feature_name], name='lookup_'+feature_name) for feature_name in user_feature_names+item_feature_names}
+        self.embeddings_regularizer = embeddings_regularizer
         self.kernal_regularizer = kernal_regularizer
-        self.k_max = k_max
-        self.p = p
-        self.dynamic_k = dynamic_k
-        self.num_sampled = num_sampled
-        self.hist_max_len = hist_max_len
-        self.user_dnn_hidden_units = user_dnn_hidden_units
-        self.model_name = model_name
 
-        self.model = self._create_model(user_features, item_features, neg_item_features, hist_max_len, num_sampled, dynamic_k, k_max, p, user_dnn_hidden_units, model_name)
+        def gen_embedding(name):
+            return Embedding(num_vocabs[name], embedding_dims[name], name='embedding_'+name, embeddings_initializer='glorot_normal', embeddings_regularizer=self.embeddings_regularizer, mask_zero=True)
 
-    def _create_model(self, user_features, item_features: List[SparseFeature], neg_item_features: List[SparseFeature], hist_max_len=10, num_sampled=4, dynamic_k=False, k_max=3, p=1.0, user_dnn_hidden_units=(64, 32), model_name='mind_model'):
+        self.embedding_layers = {feature_name: gen_embedding(feature_name) for feature_name in user_feature_names+item_feature_names}
 
-        item_feature_name = item_features[0].name
-        hist_item_feature_name = 'hist_' + item_feature_name
-        hist_len_feature_name = 'hist_len'
-        logging.info('NOTICE: user_features need have feature names: %s, %s', hist_item_feature_name, hist_len_feature_name)
-        logging.info('user_features: %s, item_features: %s, neg_item_features: %s.', user_features, item_features, neg_item_features)
-        item_embedding_dim = item_features[0].embedding_dim
+        self.model = self.create_model(embedding_dims['item_id'], hist_max_len, num_sampled, dynamic_k, k_max, p, user_dnn_hidden_units, model_name)
 
-        inputs = self.feature_builder.get_inputs()
+    def _lookup_embedding(self, inputs, name, mask_zero=False):
+        ids = self.lookup_table_layers[name](inputs[name])
+        embs = self.embedding_layers[name](ids)
+        if mask_zero:
+            return MaskZero(name='masked_emb_'+name)(embs)
+        return embs
 
+    def _get_item_embedding(self, inputs, name, combiner='mean'):
+        split_inputs = self.split_string_layers['item_id'](inputs[name])
+        embeds = {split_name: self._lookup_embedding(split_inputs, split_name) for split_name in split_inputs.keys()}
+        if combiner == 'mean':
+            embed = ListMeanPooling(name='mean_'+name)(embeds.values())
+        elif combiner == 'concat':
+            embed = concatenate(embeds.values(), name='concat_' + name)
+        return embed
+
+    def _get_embeddings(self, inputs, return_list=False):
+        embeds = {}
+        embeds['user_id'] = self._lookup_embedding(inputs, 'user_id', mask_zero=True)
+        embeds['user_type'] = self._lookup_embedding(inputs, 'user_type', mask_zero=True)
+        embeds['member_level'] = self._lookup_embedding(inputs, 'member_level', mask_zero=True)
+
+        embeds['hist_item_id'] = self._get_item_embedding(inputs, 'hist_item_id')
+
+        embeds['item_id'] = self._get_item_embedding(inputs, 'item_id')
+        embeds['neg_item_id'] = self._get_item_embedding(inputs, 'neg_item_id')
+        if return_list:
+            return list(embeds.values())
+        return embeds
+
+    def create_model(self, item_embedding_dim, hist_max_len=10, num_sampled=4, dynamic_k=False, k_max=3, p=1.0, user_dnn_hidden_units=(64, 32), model_name='mind_model'):
+        inputs = {
+            # user_input
+            'user_id': Input(shape=(1), name="user_id", dtype=tf.string),
+            'user_type': Input(shape=(1), name="user_type", dtype=tf.string),
+            'member_level': Input(shape=(1), name="member_level", dtype=tf.string),
+            'hist_item_id': Input(shape=(hist_max_len), name="hist_item_id", dtype=tf.string),
+            'hist_len': Input(shape=(1), name='hist_len', dtype=tf.int32),
+            # item_input
+            'item_id': Input(shape=(1), name="item_id", dtype=tf.string),
+            # neg_sample_input
+            'neg_item_id': Input(shape=(num_sampled), name="neg_item_id", dtype=tf.string),
+        }
         inputs_list = list(inputs.values())
-        user_inputs_list = [inputs[uf.name] for uf in user_features]
-        item_inputs_list = [inputs[item_feature_name]]
+        user_inputs_list = [inputs['user_id'], inputs['user_type'],
+                            inputs['member_level'], inputs['hist_item_id'], inputs['hist_len']]
+        item_inputs_list = [inputs['item_id']]
 
-        user_embeds = self.feature_builder.lookup_embeddings(user_features)
-        hist_item_id_emb = user_embeds.pop(hist_item_feature_name)
-        hist_len = user_embeds.pop(hist_len_feature_name)
+        hist_len = inputs['hist_len']
+        # label
+        label = tf.zeros_like(inputs['item_id'], dtype=tf.int32)
 
-        item_embeds = self.feature_builder.lookup_embeddings(item_features)
+        embeds = self._get_embeddings(inputs)
 
-        item_id_emb = item_embeds.pop(item_feature_name)
+        hist_item_id_emb = embeds.pop('hist_item_id')
+        item_id_emb = embeds.pop('item_id')
+        neg_item_id_emb = embeds.pop('neg_item_id')
 
         pooling_hist_item_id = SequencePoolingLayer()([hist_item_id_emb, hist_len])
 
-        user_feature_embeds = concatenate(list(user_embeds.values()) + [pooling_hist_item_id])
-        # user_feature_embeds = concatenate(list(user_embeds.values()))
+        # user_feature_embeds = concatenate(list(embeds.values()) + [pooling_hist_item_id])
+        user_feature_embeds = concatenate(list(embeds.values()))
         user_feature_embeds = tf.tile(user_feature_embeds, [1, k_max, 1])
 
         user_high_capsule = CapsuleLayer(input_units=item_embedding_dim, out_units=item_embedding_dim,
@@ -77,12 +105,6 @@ class MIND(object):
         else:
             user_embedding_final = attention_layer([user_deep_input, item_id_emb])
 
-        # label
-        label = tf.zeros_like(inputs[item_feature_name], dtype=tf.int32)
-
-        neg_item_feature_name = neg_item_features[0].name
-        neg_item_embeds = self.feature_builder.lookup_embeddings(neg_item_features)
-        neg_item_id_emb = neg_item_embeds.pop(neg_item_feature_name)
         item_embedding_layer = concatenate([item_id_emb, neg_item_id_emb], axis=1)
 
         logits = tf.matmul(user_embedding_final, item_embedding_layer, transpose_b=True)
@@ -125,8 +147,7 @@ class MIND(object):
         model = model if model else self.model
         if version:
             saved_model_path = saved_model_path + "/" + version
-        #model.save(saved_model_path, signatures=model.call)
-        model.save(saved_model_path)
+        model.save(saved_model_path, signatures=model.call)
 
     def load_weights(self, checkpoint_path, latest=False):
         if latest:
@@ -162,14 +183,14 @@ class MIND(object):
         user_input = self.model.user_input
         norm_user_embedding = tf.nn.l2_normalize(self.model.user_embedding, axis=-1, name='norm_user')
 
-        item_inputs = {'item_id': Input(shape=(None,), name="item_id", dtype=tf.string)}
-        item_embeddings = self.feature_builder.get_item_embedding(item_inputs, self.item_feature)
+        item_inputs = {'item_ids': Input(shape=(None,), name="item_ids", dtype=tf.string)}
+        item_embeddings = self._get_item_embedding(item_inputs, 'item_ids')
         norm_item_embeddings = tf.nn.l2_normalize(item_embeddings, axis=-1, name='norm_item')
 
         probs = tf.einsum('ijk,ilk->ijl', norm_user_embedding, norm_item_embeddings, name='probs')
-        sorted_probs = tf.sort(probs, axis=-1, direction='DESCENDING', name='desc_probs')
-        sorted_index = tf.argsort(probs, axis=-1, direction='DESCENDING', stable=True, name='desc_indices')
-        serving_model = Model(inputs=user_input + list(item_inputs.values()), outputs={'probs': sorted_probs, 'indices': sorted_index}, name='serving_model')
+        sorted_probs = tf.sort(probs, axis=-1, direction='DESCENDING')
+        sorted_index = tf.argsort(probs, axis=-1, direction='DESCENDING', stable=True)
+        serving_model = Model(inputs=user_input + list(item_inputs.values()), outputs=(sorted_probs, sorted_index), name='serving_model')
         return serving_model
 
     def save_serving_model(self, saved_model_path, version=None):

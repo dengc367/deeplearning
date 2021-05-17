@@ -1,3 +1,4 @@
+import json
 from mind.layers import MaskZero, ListMeanPooling
 from tensorflow.keras.layers import concatenate
 from mind.layers import LookupTable, SplitString
@@ -13,17 +14,26 @@ class Feature:
         self.input_dtype = input_dtype
         self.masked = masked
 
+    def __hash__(self):
+        return self.name.__hash__()
+
+    def __eq__(self, o: object) -> bool:
+        return self.name == o.name
+
+    def __str__(self) -> str:
+        return json.dumps(self.__dict__, default=lambda x: str(x))
+
 
 class SparseFeature(Feature):
-    def __init__(self, name, input_shape=(1,), input_dtype=tf.string,
+    def __init__(self, name, vocab_size, embedding_dim, input_shape=(1,), input_dtype=tf.string,
                  masked=False,
                  lookup_table_path=None,
                  attribute_features=[],
                  attribute_features_separator='_',
                  attribute_features_combiner='mean',
                  embedding_name=None,
-                 embedding_intput_dim=None,
-                 embedding_output_dim=32
+                 embeddings_initializer='glorot_normal',
+                 embeddings_regularizer=None
                  ):
         if isinstance(attribute_features, list) and len(attribute_features) > 0 and input_dtype != tf.string:
             raise "when attribute_features is not empty, input_dtype must be tf.string"
@@ -34,14 +44,10 @@ class SparseFeature(Feature):
         self.attribute_features_combiner = attribute_features_combiner
 
         self.embedding_name = name if embedding_name is None else embedding_name
-        self.embedding_intput_dim = embedding_intput_dim
-        self.embedding_output_dim = embedding_output_dim
-
-
-class SequenceSparseFeature(Feature):
-    def __init__(self, name, input_shape, feature, input_dtype=tf.string, masked=False):
-        super().__init__(name, input_shape, input_dtype, masked=masked)
-        self.feature = feature
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        self.embeddings_initializer = embeddings_initializer
+        self.embeddings_regularizer = embeddings_regularizer
 
 
 class DenseFeature(Feature):
@@ -77,7 +83,8 @@ def create_embedding_layers(features: List[Feature], to_list=False) -> Union[Map
     embedding_layers = {}
     for feature in flatten_features(features, True):
         if isinstance(feature, SparseFeature) and feature.embedding_name not in embedding_layers and not feature.masked:
-            embedding_layers[feature.embedding_name] = Embedding(feature.embedding_intput_dim, feature.embedding_output_dim, name='embedding_' + feature.embedding_name, mask_zero=True)
+            embedding_layers[feature.embedding_name] = Embedding(feature.vocab_size, feature.embedding_dim, embeddings_initializer=feature.embeddings_initializer,
+                                                                 embeddings_regularizer=feature.embeddings_regularizer, name='embedding_' + feature.embedding_name, mask_zero=True)
     if to_list:
         return list(embedding_layers.values())
     return embedding_layers
@@ -123,6 +130,22 @@ class FeatureBuilder:
         self.lookup_table_layers = create_lookup_table_layers(features)
         self.embedding_layers = create_embedding_layers(features)
 
+    def get_inputs(self, to_list=False):
+        input_layers = self.input_layers
+        if to_list:
+            return list(input_layers.values())
+        return input_layers
+
+    def lookup_embeddings(self, return_features: List[Feature] = [], to_list=False):
+        dense_inputs = self.get_dense_inputs()
+        sparse_embeddings = self.get_sparse_embeddings()
+        return_embeddings = dict(list(dense_inputs.items()) + list(sparse_embeddings.items()))
+        if isinstance(return_features, list) and len(return_features) > 0:
+            return_embeddings = {f.name: return_embeddings[f.name] for f in return_features}
+        if to_list:
+            return list(return_embeddings.values())
+        return return_embeddings
+
     def get_dense_inputs(self, to_list=False):
         dense_inputs = {}
         for feature in self.features:
@@ -138,16 +161,16 @@ class FeatureBuilder:
             if not isinstance(feature, SparseFeature):
                 continue
             if isinstance(feature.attribute_features, list) and len(feature.attribute_features) > 0:
-                embedding = self._get_item_embedding(self.input_layers, feature)
+                embedding = self.get_item_embedding(self.input_layers, feature)
             else:
-                embedding = self._lookup_embedding(self.input_layers, feature)
+                embedding = self.lookup_embedding(self.input_layers, feature)
             if embedding is not None:
                 embeddings[feature.name] = embedding
         if to_list:
             return list(embeddings.values())
         return embeddings
 
-    def _lookup_embedding(self, inputs, feature: SparseFeature, mask_zero=False):
+    def lookup_embedding(self, inputs, feature: SparseFeature, mask_zero=False):
         name = feature.name
         embedding_name = feature.embedding_name
         if feature.masked:
@@ -158,19 +181,19 @@ class FeatureBuilder:
             return MaskZero(name='masked_emb_'+name)(embs)
         return embs
 
-    def _get_item_embedding(self, inputs, feature: SparseFeature):
+    def get_item_embedding(self, inputs, feature: SparseFeature):
         name = feature.name
         embedding_name = feature.embedding_name
         combiner = feature.attribute_features_combiner
         embeds = {}
         if not feature.masked:
-            embeds[name] = self._lookup_embedding(inputs, feature)
+            embeds[name] = self.lookup_embedding(inputs, feature)
 
         attr_inputs = self.split_string_layers[embedding_name](inputs[name])
         for attr_name in attr_inputs.keys():
             attr_feature = self.feature_map[attr_name]
             if not attr_feature.masked:
-                embeds[attr_name] = self._lookup_embedding(attr_inputs, attr_feature)
+                embeds[attr_name] = self.lookup_embedding(attr_inputs, attr_feature)
 
         if combiner == 'mean':
             embed = ListMeanPooling(name='mean_'+name)(embeds.values())

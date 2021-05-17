@@ -1,16 +1,19 @@
 #  %%
-
-from re import X
-from tensorflow.keras.regularizers import L2
-from scipy import spatial
-import faiss
-import tensorflow as tf
-from mind import model as mind_model
+import grpc
+import time
+import json
+import requests
+import mind.features as mf
 import sys
 import importlib
-import pandas as pd
 import numpy as np
 import pickle
+from tensorflow.keras.regularizers import L2
+import tensorflow as tf
+from tensorflow_serving.apis import prediction_service_pb2_grpc
+from tensorflow_serving.apis import predict_pb2
+from tensorflow import make_tensor_proto
+from mind import model as mind_model
 
 
 # %%
@@ -62,10 +65,10 @@ else:
     checkpoint_dir = 'model/saved_ckpt_path'
     checkpoint_path = checkpoint_dir + '/cp-{epoch:04d}.ckpt'
     checkpoint_frequency = 'epoch'
-    epochs = 2
+    epochs = 4
     buffer_size = 1024
     batch_size = 64
-    test_batch_size = 1
+    test_batch_size = 128
     embedding_dim = 32
 
     with open(meta_path, 'rb') as f:
@@ -89,23 +92,53 @@ embedding_dims = {
     'third_class_id': embedding_dim,
     'brand_id': embedding_dim
 }
-if sys.modules['mind.model'] is not None:
-    importlib.reload(sys.modules['mind.model'])
+if sys.modules.get('mind.model_v2') is not None:
+    importlib.reload(sys.modules['mind.model_v2'])
+
+embeddings_regularizer = L2(0.0001)
+kernal_regularizer = L2(0.0001)
 
 
-model = mind_model.MIND(vocab_paths,
-                        num_vocabs,
-                        embedding_dims,
+def gen_sparse_feature(name, embedding_name=None, **kwargs):
+    embedding_name = name if embedding_name is None else embedding_name
+    return mf.SparseFeature(name=name, vocab_size=num_vocabs[embedding_name], embedding_dim=embedding_dims[embedding_name],
+                            lookup_table_path=vocab_paths[embedding_name], embeddings_regularizer=embeddings_regularizer, **kwargs)
+
+
+item_id_attribute_features = [
+    gen_sparse_feature('product_id'),
+    gen_sparse_feature('first_class_id'),
+    gen_sparse_feature('second_class_id'),
+    gen_sparse_feature('third_class_id'),
+    gen_sparse_feature('brand_id'),
+]
+
+user_features = [
+    gen_sparse_feature('user_id'),
+    gen_sparse_feature('user_type'),
+    gen_sparse_feature('member_level'),
+    gen_sparse_feature('hist_item_id', embedding_name='item_id', input_shape=(context_length,), masked=True, attribute_features=item_id_attribute_features),
+    mf.DenseFeature(name='hist_len', input_dtype=tf.int32),
+]
+item_features = [
+    gen_sparse_feature('item_id', masked=True, attribute_features=item_id_attribute_features),
+]
+neg_item_features = [
+    gen_sparse_feature('neg_item_id', embedding_name='item_id', input_shape=(neg_sample_num,), masked=True, attribute_features=item_id_attribute_features),
+]
+
+features = (user_features, item_features, neg_item_features)
+
+model = mind_model.MIND(features,
                         hist_max_len=context_length,
                         num_sampled=neg_sample_num,
                         dynamic_k=False,
                         k_max=5,
                         p=10.0,
-                        embeddings_regularizer=None,
-                        kernal_regularizer=L2(0.0001),
-                        user_dnn_hidden_units=(embedding_dim,))
+                        kernal_regularizer=kernal_regularizer,
+                        user_dnn_hidden_units=(embedding_dim*2, embedding_dim,))
 model.summary()
-# %%
+
 # %%
 
 
@@ -137,189 +170,99 @@ train_dataset = gen_dataset(train_path, batch_size)
 test_dataset = gen_dataset(test_path, test_batch_size)
 
 # %%
-model.compile()
-model.train(train_dataset, test_dataset, epochs=epochs, steps_per_epoch=None, checkpoint_path=checkpoint_path,
-            checkpoint_frequency=checkpoint_frequency, restore_latest=False, monitor='val_acurracy', mode='max')
+# model.compile()
+# model.train(train_dataset, test_dataset, epochs=1, steps_per_epoch=None, checkpoint_path=checkpoint_path,
+#             checkpoint_frequency=checkpoint_frequency, restore_latest=False, monitor='val_acurracy', mode='max')
+# %%
 
-# %%
-model.compile()
-model.train(train_dataset, test_dataset, epochs=3, steps_per_epoch=None, checkpoint_path=checkpoint_path,
-            checkpoint_frequency=checkpoint_frequency, restore_latest=True, monitor='val_acurracy', mode='max')
-# %%
 model.compile(optimizer="adam")
 model.load_weights(checkpoint_path, True)
 # model.train(train_dataset, test_dataset, epochs, checkpoint_path, checkpoint_frequency)
 # %%
 user_embedding_model = model.get_user_model()
 item_embedding_model = model.get_item_model()
-# user_embedding_model.summary()
-# item_embedding_model.summary()
+user_embedding_model.summary()
+item_embedding_model.summary()
 
 serving_model = model.get_serving_model()
-# serving_model.summary()
-
-
-# %%
+serving_model.summary()
 
 # %%
-# data_item_ids = set()
-# for i, d in enumerate(train_dataset.as_numpy_iterator()):
-#     a = np.reshape(np.concatenate([d['hist_item_id'], d.pop('item_id'), d.pop('neg_item_id')], axis=-1), -1)
-#     # data_item_ids.add(list(a))
-#     # print(a)
-#     a = set(map(lambda x: x.decode('utf-8'), a))
-#     # data_item_ids.add(a)
-#     data_item_ids.update(a)
-#     # print(a)
-#     # if i > 3:
-#     #     break
-# print(len(data_item_ids))
-# print(list(data_item_ids)[:10])
+it = test_dataset.as_numpy_iterator()
+d = next(it)
 # %%
-df_item_info = pd.read_csv('dev/meta/items_info.csv', header=0, index_col=0).reset_index(drop=True)
-# df_item_info.head()
+# print(d['user_id'].tolist())
+# d['hist_len'].tolist()
+# d['user_type']
+# np.char.decode(d['user_type'].astype(np.bytes_), 'UTF-8').tolist()
+np.concatenate([d['item_id'], d['neg_item_id']], axis=-1)
+# %%)
 
-df_item_id = pd.read_csv(vocab_paths['item_id'], names=['id', 'item_id'], index_col='id')
-item_ids = np.array(df_item_id['item_id'], dtype='str')
-product_ids = np.array(list(map(lambda x: x.split('_')[0], item_ids)),
-                       dtype=np.int64)
-# print(len(df_item_id))
-item_ids_dataset = {'item_id': item_ids}
-# %%
-for i, d in enumerate(test_dataset.as_numpy_iterator()):
-    # print(d, d['user_id'].shape)
-    pred_item_ids = item_ids
-    # pred_item_ids = np.array(['25947_101_400102199_400102779_703', '100499_400102107_400102163_400102557_591'])
-    d['item_ids'] = np.repeat(np.expand_dims(pred_item_ids, 0), d['user_id'].shape[0], axis=0)
-    items_id = list(map(lambda x: x.decode('utf-8'), np.squeeze(np.concatenate([d['hist_item_id'], d.pop('item_id')], axis=-1))))
-    df_xx_items_id = df_item_info.set_index('item_id')
-    print(items_id)
-    print(df_xx_items_id.loc[items_id].reset_index(drop=True)[['product_id', 'product_name', 'category_name1', 'category_name2', 'category_name3', 'brand_name']])
-    probs, indices = serving_model.predict(d)
-    # print(probs[:, :, :10])
-    print(indices[:, :, :10], probs.shape)
-    # pids = np.squeeze(indices[:, 1, :10])
-    # print(pids)
-    for i in range(indices.shape[1]):
-        print(df_item_info.loc[np.squeeze(indices[:, i, :10])][['product_id', 'product_name', 'category_name1', 'category_name2', 'category_name3', 'brand_name']])
 
-    # if i >= 10:
-    break
+class MyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return super(MyEncoder, self).default(obj)
+
+
+payload = {
+    "inputs": {
+        "user_id": d['user_id'].astype('U13').tolist(),  # [B] eg: [22][[],[]]
+        'user_type': np.char.decode(d['user_type'].astype(np.bytes_), 'UTF-8').tolist(),
+        'member_level': np.char.decode(d['member_level'].astype(np.bytes_), 'UTF-8').tolist(),
+        'hist_item_id': d['hist_item_id'].astype('U13').tolist(),
+        'hist_len': d['hist_len'].tolist(),
+        'item_id': np.concatenate([d['item_id'], d['neg_item_id']], axis=-1).astype('U13').tolist(),
+    }
+}
+payload = json.dumps(payload, cls=MyEncoder)
+print((payload))
+
+r = requests.post('http://10.254.64.251:8505/v1/models/mind_user_similarity:predict', data=payload)
+# r = requests.post('http://10.254.64.89:8503/v1/models/match_ItemsSimilarity:predict', data=payload)
+# r = requests.post('http://tf2-serving.prod.chunbo.com/v1/models/match_ItemsSimilarity:predict', data=payload)
+
+pred = json.loads(r.content.decode('utf-8'))
+print(pred['outputs'])
 # %%
 
 
-def recall_N(y_true, y_pred, N=50):
-    return len(set(y_pred[:N]) & set(y_true)) * 1.0 / len(y_true)
+def run(host='10.254.64.251', port='8504', model='mind_user_similarity', signature_name='serving_default'):
+
+    channel = grpc.insecure_channel('{host}:{port}'.format(host=host, port=port))
+    stub = prediction_service_pb2_grpc.PredictionServiceStub(channel)
+
+    start = time.time()
+
+    # Call classification model to make prediction
+    request = predict_pb2.PredictRequest()
+    request.model_spec.name = model
+    request.model_spec.signature_name = signature_name
+    request.inputs['user_id'].CopyFrom(make_tensor_proto(d['user_id']))
+    request.inputs['user_type'].CopyFrom(make_tensor_proto(d['user_type']))
+    request.inputs['member_level'].CopyFrom(make_tensor_proto(d['member_level']))
+    request.inputs['hist_item_id'].CopyFrom(make_tensor_proto(d['hist_item_id']))
+    request.inputs['hist_len'].CopyFrom(make_tensor_proto(d['hist_len']))
+    request.inputs['item_id'].CopyFrom(make_tensor_proto(np.concatenate([d['item_id'], d['neg_item_id']], axis=-1)))
+
+#     print(request)
+    result = stub.Predict(request, 10.0)
+
+    end = time.time()
+    time_diff = end - start
+
+    # Reference:
+    # How to access nested values
+    # https://stackoverflow.com/questions/44785847/how-to-retrieve-float-val-from-a-predictresponse-object
+    print(result.outputs['tf.argsort'])
+    print('time elapased: {}'.format(time_diff))
 
 
-# %%
-item_embs = item_embedding_model.predict(item_ids_dataset)
-item_embs = np.squeeze(item_embs)
-item_embs.shape
-
-quantizer = faiss.IndexFlatIP(embedding_dim)
-index = faiss.IndexIVFFlat(quantizer, embedding_dim, int(np.sqrt(len(product_ids))), faiss.METRIC_INNER_PRODUCT)
-faiss.normalize_L2(item_embs)
-index.train(item_embs)
-print(index.is_trained)
-# index.add(item_embs)
-index.add_with_ids(item_embs, product_ids)
-
-# index.add_with_ids(item_embs, product_ids)
-# index = faiss.index_factory(embedding_dim, "Flat", faiss.METRIC_INNER_PRODUCT)
-# faiss.normalize_L2(item_embs)
-# index.add(item_embs)
-
-# index = faiss.IndexFlatIP(embedding_dim)
-# faiss.normalize_L2(item_embs)
-# index.add(item_embs)
-
-print(index.ntotal)
-
-
-# %%
-faiss.write_index(index, 'dev/data/faiss_index.bin')
-index = faiss.read_index('dev/data/faiss_index.bin')
-# %%
-print(product_ids[:3], product_ids[5255], product_ids[4681], product_ids[5104])
-print(item_ids[:2])
-
-ddd, iii = index.search(item_embs[:2], 10)
-ddd, iii
-# %%
-s = []
-lines = 0
-hits = 0
-topk = 100
-for d in (test_dataset.as_numpy_iterator()):
-    # print(d['user_id'].shape)
-    # print(d['item_id'].shape)
-    batch_size = d['user_id'].shape[0]
-    pred_user_embs = user_embedding_model.predict(d)
-
-    faiss.normalize_L2(pred_user_embs)
-    if len(pred_user_embs.shape) == 3:
-        nq, nk = pred_user_embs.shape[0], pred_user_embs.shape[1]
-        result_heap = faiss.ResultHeap(nq=nq, k=topk)
-        ids_list = []
-        for i in range(nk):
-            ni = np.ascontiguousarray(pred_user_embs[:, i, :])
-            dists, ids = index.search(ni, topk)
-            result_heap.add_result(D=dists, I=ids)
-            ids_list.append(ids)
-        result_heap.finalize()
-        dists, ids = result_heap.D, result_heap.I
-        ids2 = np.concatenate(ids_list, axis=0)
-    elif len(pred_user_embs.shape) == 2:
-        dists, ids = index.search(pred_user_embs, topk)
-    else:
-        raise('shape rank is not 2 or 3')
-
-    uids = d['user_id']
-    iids = d['item_id']
-    groudtruth_pids = list(map(lambda x: int((x[0].decode("utf-8").split('_')[0])), iids))
-    for i in range(batch_size):
-        groudtruth_pid = groudtruth_pids[i]
-        pred_pids = list(ids[i])
-        pred_pids2 = list(ids2[i])
-        # print(item_id, pred_item_ids)
-        # print(type(item_id), type(pred_item_ids))
-        recall_score = recall_N([groudtruth_pid], pred_pids, topk * 5)
-        s.append(recall_score)
-        lines += 1
-        if groudtruth_pid in pred_pids2:
-            hits += 1
-    # print(I2.shape)
-    if lines > 1000:
-        break
-print("recall: ", np.mean(s))
-print("hit ratio: ,", hits / lines, ", hits: ", hits, "lines: ", lines)
-
-# %%
-
-# %%
-
-# %%
-
-
-# %%
-dataSetI = [.1, .2, .3]
-dataSetII = [.4, .5, .6]
-# dataSetII = [.1, .2, .3]
-
-x = np.array([dataSetI]).astype(np.float32)
-q = np.array([dataSetII]).astype(np.float32)
-index = faiss.index_factory(3, "Flat", faiss.METRIC_INNER_PRODUCT)
-index.ntotal
-faiss.normalize_L2(x)
-index.add(x)
-faiss.normalize_L2(q)
-distance, index = index.search(q, 5)
-print('Distance by FAISS:{}'.format(distance))
-
-# To Tally the results check the cosine similarity of the following example
-
-
-result = 1 - spatial.distance.cosine(dataSetI, dataSetII)
-print('Distance by FAISS:{}'.format(result))
+run()
 # %%

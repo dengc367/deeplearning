@@ -11,21 +11,21 @@ num_vocab = {'item_id': 5760, 'product_id': 5760, 'first_class_id': 14, 'second_
 
 
 item_id_attribute_features = [
-    mf.SparseFeature(name='product_id', lookup_table_path=vocab_paths['product_id'],  embedding_intput_dim=num_vocab['product_id']),
-    mf.SparseFeature(name='first_class_id', lookup_table_path=vocab_paths['first_class_id'], embedding_intput_dim=num_vocab['first_class_id']),
-    mf.SparseFeature(name='second_class_id', lookup_table_path=vocab_paths['second_class_id'],  embedding_intput_dim=num_vocab['second_class_id']),
-    mf.SparseFeature(name='third_class_id', lookup_table_path=vocab_paths['third_class_id'], embedding_intput_dim=num_vocab['third_class_id']),
-    mf.SparseFeature(name='brand_id', lookup_table_path=vocab_paths['brand_id'], embedding_intput_dim=num_vocab['brand_id'])
+    mf.SparseFeature(name='product_id', lookup_table_path=vocab_paths['product_id'],  vocab_size=num_vocab['product_id'], embedding_dim=32),
+    mf.SparseFeature(name='first_class_id', lookup_table_path=vocab_paths['first_class_id'], vocab_size=num_vocab['first_class_id'], embedding_dim=32),
+    mf.SparseFeature(name='second_class_id', lookup_table_path=vocab_paths['second_class_id'],  vocab_size=num_vocab['second_class_id'], embedding_dim=32),
+    mf.SparseFeature(name='third_class_id', lookup_table_path=vocab_paths['third_class_id'], vocab_size=num_vocab['third_class_id'], embedding_dim=32),
+    mf.SparseFeature(name='brand_id', lookup_table_path=vocab_paths['brand_id'], vocab_size=num_vocab['brand_id'], embedding_dim=32)
 ]
 features = [
-    mf.SparseFeature(name='user_id', lookup_table_path=vocab_paths['user_id'], embedding_intput_dim=num_vocab['user_id']),
-    mf.SparseFeature(name='user_type', lookup_table_path=vocab_paths['user_type'], embedding_intput_dim=num_vocab['user_type']),
-    mf.SparseFeature(name='member_level', lookup_table_path=vocab_paths['member_level'], embedding_intput_dim=num_vocab['member_level']),
-    mf.SparseFeature(name='hist_item_id', input_shape=(10,), embedding_name='item_id', masked=True, attribute_features=item_id_attribute_features),
+    mf.SparseFeature(name='user_id', lookup_table_path=vocab_paths['user_id'], vocab_size=num_vocab['user_id'], embedding_dim=32),
+    mf.SparseFeature(name='user_type', lookup_table_path=vocab_paths['user_type'], vocab_size=num_vocab['user_type'], embedding_dim=32),
+    mf.SparseFeature(name='member_level', lookup_table_path=vocab_paths['member_level'], vocab_size=num_vocab['member_level'], embedding_dim=32),
+    mf.SparseFeature(name='hist_item_id', input_shape=(10,), embedding_name='item_id', vocab_size=num_vocab['item_id'], embedding_dim=32, masked=True, attribute_features=item_id_attribute_features),
     mf.DenseFeature(name='hist_len', input_dtype=tf.int32),
-    mf.SparseFeature(name='item_id', masked=True,
+    mf.SparseFeature(name='item_id', masked=True, embedding_dim=32, vocab_size=num_vocab['item_id'],
                      attribute_features=item_id_attribute_features),
-    mf.SparseFeature(name='neg_item_id', input_shape=(4,), embedding_name='item_id', masked=True, attribute_features=item_id_attribute_features),
+    mf.SparseFeature(name='neg_item_id', input_shape=(4,), embedding_name='item_id', vocab_size=num_vocab['item_id'], embedding_dim=32, masked=True, attribute_features=item_id_attribute_features),
 
 
 ]
