@@ -9,6 +9,9 @@ from mind.features import Feature, FeatureBuilder, SparseFeature
 
 
 class MIND(object):
+    """ref: Multi-interest network with dynamic routing for recommendation at Tmall
+    """
+
     def __init__(self, features: Tuple[List[Feature]],
                  hist_max_len=10, num_sampled=4,
                  dynamic_k=False, k_max=3, p=1.0, user_dnn_hidden_units=(64, 32),
