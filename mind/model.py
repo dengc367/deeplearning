@@ -4,11 +4,12 @@ import tensorflow as tf
 from absl import logging
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, Input, concatenate
+from core.base_model import BaseModel
 from mind.layers import SequencePoolingLayer, CapsuleLayer, LabelAwareAttention
 from mind.features import Feature, FeatureBuilder, SparseFeature
 
 
-class MIND(object):
+class MIND(BaseModel):
     """ref: Multi-interest network with dynamic routing for recommendation at Tmall
     """
 
@@ -34,7 +35,8 @@ class MIND(object):
         self.user_dnn_hidden_units = user_dnn_hidden_units
         self.model_name = model_name
 
-        self.model = self._create_model(user_features, item_features, neg_item_features, hist_max_len, num_sampled, dynamic_k, k_max, p, user_dnn_hidden_units, model_name)
+        model = self._create_model(user_features, item_features, neg_item_features, hist_max_len, num_sampled, dynamic_k, k_max, p, user_dnn_hidden_units, model_name)
+        super().__init__(model)
 
     def _create_model(self, user_features, item_features: List[SparseFeature], neg_item_features: List[SparseFeature], hist_max_len=10, num_sampled=4, dynamic_k=False, k_max=3, p=1.0, user_dnn_hidden_units=(64, 32), model_name='mind_model'):
 
@@ -104,51 +106,6 @@ class MIND(object):
 
         return model
 
-    def train(self, train_dataset, test_dataset, epochs, steps_per_epoch=None, checkpoint_path=None, checkpoint_frequency='epoch', restore_latest=False, monitor='val_loss', mode='min'):
-        callbacks = [tf.keras.callbacks.EarlyStopping(monitor=monitor, mode=mode, verbose=1, patience=2, restore_best_weights=True)]
-        if checkpoint_path is not None:
-            if restore_latest:
-                self.load_weights(checkpoint_path, restore_latest)
-            checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path, save_freq=checkpoint_frequency, monitor=monitor, mode=mode,
-                                                               verbose=1, save_weights_only=True, save_best_only=True)
-            callbacks.append(checkpoint_cb)
-
-        history = self.model.fit(train_dataset,
-                                 epochs=epochs,
-                                 steps_per_epoch=steps_per_epoch,
-                                 validation_data=test_dataset,
-                                 validation_steps=100,
-                                 callbacks=callbacks)
-        return history
-
-    def compile(self, optimizer="adam"):
-        self.model.compile(optimizer=optimizer)
-
-    def save_model(self, saved_model_path, version=None, model=None):
-        model = model if model else self.model
-        if version:
-            saved_model_path = saved_model_path + "/" + version
-        #model.save(saved_model_path, signatures=model.call)
-        model.save(saved_model_path)
-
-    def load_weights(self, checkpoint_path, latest=False):
-        if latest:
-            checkpoint_dir = checkpoint_path if os.path.isdir(checkpoint_path) else os.path.dirname(checkpoint_path)
-            latest_path = tf.train.latest_checkpoint(checkpoint_dir)
-            print('latest checkpoint dir: ', latest_path)
-            self.model.load_weights(latest_path)
-        else:
-            self.model.load_weights(checkpoint_path)
-
-    def save_weights(self, checkpoint_path):
-        self.model.save_weights(checkpoint_path)
-
-    def get_model(self):
-        return self.model
-
-    def summary(self):
-        self.model.summary()
-
     def get_user_model(self, normalized=True):
         model = self.model
         user_embedding = tf.nn.l2_normalize(model.user_embedding, axis=-1) if normalized else model.user_embedding
@@ -176,7 +133,3 @@ class MIND(object):
         sorted_index = tf.keras.layers.Lambda(lambda x: x, name='indices')(sorted_index)
         serving_model = Model(inputs=user_input + list(item_inputs.values()), outputs={'probs': sorted_probs, 'indices': sorted_index}, name='serving_model')
         return serving_model
-
-    def save_serving_model(self, saved_model_path, version=None):
-        serving_model = self.get_serving_model()
-        self.save_model(saved_model_path, version=version, model=serving_model)

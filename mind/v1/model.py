@@ -2,7 +2,8 @@ import os
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Embedding, Dense, concatenate, Input
-from mind.layers import MaskZero, ListMeanPooling, SplitString, LookupTable, SequencePoolingLayer, CapsuleLayer, LabelAwareAttention
+from core.layers import MaskZero, ListMeanPooling, SplitString, LookupTable
+from mind.layers import SequencePoolingLayer, CapsuleLayer, LabelAwareAttention
 
 
 class MIND(object):

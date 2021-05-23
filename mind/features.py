@@ -1,7 +1,6 @@
 import json
-from mind.layers import MaskZero, ListMeanPooling
 from tensorflow.keras.layers import concatenate
-from mind.layers import LookupTable, SplitString
+from core.layers import LookupTable, SplitString, MaskZero, ListMeanPooling
 from typing import List, Mapping, Sequence, Union
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Embedding
