@@ -26,8 +26,8 @@ class BaseModel():
                                  callbacks=callbacks)
         return history
 
-    def compile(self, optimizer="adam"):
-        self.model.compile(optimizer=optimizer)
+    def compile(self, optimizer="adam", **kwargs):
+        self.model.compile(optimizer=optimizer, **kwargs)
 
     def save_model(self, saved_model_path, version=None, model=None):
         model = model if model else self.model

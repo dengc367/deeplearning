@@ -15,7 +15,6 @@ from tensorflow_serving.apis import predict_pb2
 from tensorflow import make_tensor_proto
 from mind import model as mind_model
 
-
 # %%
 mode = 'dev'
 if mode == 'dev':
@@ -101,8 +100,12 @@ kernal_regularizer = L2(0.0001)
 
 def gen_sparse_feature(name, embedding_name=None, **kwargs):
     embedding_name = name if embedding_name is None else embedding_name
-    return mf.SparseFeature(name=name, vocab_size=num_vocabs[embedding_name], embedding_dim=embedding_dims[embedding_name],
-                            lookup_table_path=vocab_paths[embedding_name], embeddings_regularizer=embeddings_regularizer, **kwargs)
+    return mf.SparseFeature(name=name,
+                            vocab_size=num_vocabs[embedding_name],
+                            embedding_dim=embedding_dims[embedding_name],
+                            lookup_table_path=vocab_paths[embedding_name],
+                            embeddings_regularizer=embeddings_regularizer,
+                            **kwargs)
 
 
 item_id_attribute_features = [
@@ -117,14 +120,24 @@ user_features = [
     gen_sparse_feature('user_id'),
     gen_sparse_feature('user_type'),
     gen_sparse_feature('member_level'),
-    gen_sparse_feature('hist_item_id', embedding_name='item_id', input_shape=(context_length,), masked=True, attribute_features=item_id_attribute_features),
+    gen_sparse_feature('hist_item_id',
+                       embedding_name='item_id',
+                       input_shape=(context_length, ),
+                       masked=True,
+                       attribute_features=item_id_attribute_features),
     mf.DenseFeature(name='hist_len', input_dtype=tf.int32),
 ]
 item_features = [
-    gen_sparse_feature('item_id', masked=True, attribute_features=item_id_attribute_features),
+    gen_sparse_feature('item_id',
+                       masked=True,
+                       attribute_features=item_id_attribute_features),
 ]
 neg_item_features = [
-    gen_sparse_feature('neg_item_id', embedding_name='item_id', input_shape=(neg_sample_num,), masked=True, attribute_features=item_id_attribute_features),
+    gen_sparse_feature('neg_item_id',
+                       embedding_name='item_id',
+                       input_shape=(neg_sample_num, ),
+                       masked=True,
+                       attribute_features=item_id_attribute_features),
 ]
 
 features = (user_features, item_features, neg_item_features)
@@ -136,7 +149,10 @@ model = mind_model.MIND(features,
                         k_max=5,
                         p=10.0,
                         kernal_regularizer=kernal_regularizer,
-                        user_dnn_hidden_units=(embedding_dim*2, embedding_dim,))
+                        user_dnn_hidden_units=(
+                            embedding_dim * 2,
+                            embedding_dim,
+                        ))
 model.summary()
 
 # %%
@@ -147,21 +163,30 @@ def gen_dataset(input_path, batch_size):
         example = tf.io.parse_single_example(
             serialized,
             features={
-                'user_id': tf.io.FixedLenFeature([1], tf.string),
-                'user_type': tf.io.FixedLenFeature([1], tf.string),
-                'member_level': tf.io.FixedLenFeature([1], tf.string),
-                'hist_ids': tf.io.FixedLenFeature([context_length], tf.string),
-                'hist_len': tf.io.FixedLenFeature([1], tf.int64),
-
-                'label_ids': tf.io.FixedLenFeature([1 + neg_sample_num], tf.string),
+                'user_id':
+                tf.io.FixedLenFeature([1], tf.string),
+                'user_type':
+                tf.io.FixedLenFeature([1], tf.string),
+                'member_level':
+                tf.io.FixedLenFeature([1], tf.string),
+                'hist_ids':
+                tf.io.FixedLenFeature([context_length], tf.string),
+                'hist_len':
+                tf.io.FixedLenFeature([1], tf.int64),
+                'label_ids':
+                tf.io.FixedLenFeature([1 + neg_sample_num], tf.string),
             })
         # http://10.254.8.108:8888/lab/tree/mind/gen_dataset.ipynb 这个上面的 hist_ids默认值在前面
-        example['hist_item_id'] = tf.reverse(example.pop('hist_ids'), axis=[-1])
+        example['hist_item_id'] = tf.reverse(example.pop('hist_ids'),
+                                             axis=[-1])
         example['hist_len'] = tf.cast(example['hist_len'], tf.int32)
-        example['item_id'], example['neg_item_id'] = tf.split(example.pop('label_ids'), [1, 4], axis=-1)
+        example['item_id'], example['neg_item_id'] = tf.split(
+            example.pop('label_ids'), [1, 4], axis=-1)
         return example
+
     input_file_pattern = tf.data.Dataset.list_files(input_path)
-    dataset = tf.data.TFRecordDataset(input_file_pattern).map(decode).prefetch(batch_size * 10).shuffle(batch_size*10)
+    dataset = tf.data.TFRecordDataset(input_file_pattern).map(decode).prefetch(
+        batch_size * 10).shuffle(batch_size * 10)
     dataset = dataset.batch(batch_size)
     return dataset
 
@@ -213,18 +238,27 @@ class MyEncoder(json.JSONEncoder):
 
 payload = {
     "inputs": {
-        "user_id": d['user_id'].astype('U13').tolist(),  # [B] eg: [22][[],[]]
-        'user_type': np.char.decode(d['user_type'].astype(np.bytes_), 'UTF-8').tolist(),
-        'member_level': np.char.decode(d['member_level'].astype(np.bytes_), 'UTF-8').tolist(),
-        'hist_item_id': d['hist_item_id'].astype('U13').tolist(),
-        'hist_len': d['hist_len'].tolist(),
-        'item_id': np.concatenate([d['item_id'], d['neg_item_id']], axis=-1).astype('U13').tolist(),
+        "user_id":
+        d['user_id'].astype('U13').tolist(),  # [B] eg: [22][[],[]]
+        'user_type':
+        np.char.decode(d['user_type'].astype(np.bytes_), 'UTF-8').tolist(),
+        'member_level':
+        np.char.decode(d['member_level'].astype(np.bytes_), 'UTF-8').tolist(),
+        'hist_item_id':
+        d['hist_item_id'].astype('U13').tolist(),
+        'hist_len':
+        d['hist_len'].tolist(),
+        'item_id':
+        np.concatenate([d['item_id'], d['neg_item_id']],
+                       axis=-1).astype('U13').tolist(),
     }
 }
 payload = json.dumps(payload, cls=MyEncoder)
 print((payload))
 
-r = requests.post('http://10.254.64.251:8505/v1/models/mind_user_similarity:predict', data=payload)
+r = requests.post(
+    'http://10.254.64.251:8505/v1/models/mind_user_similarity:predict',
+    data=payload)
 # r = requests.post('http://10.254.64.89:8503/v1/models/match_ItemsSimilarity:predict', data=payload)
 # r = requests.post('http://tf2-serving.prod.chunbo.com/v1/models/match_ItemsSimilarity:predict', data=payload)
 
@@ -233,9 +267,13 @@ print(pred['outputs'])
 # %%
 
 
-def run(host='10.254.64.251', port='8504', model='mind_user_similarity', signature_name='serving_default'):
+def run(host='10.254.64.251',
+        port='8504',
+        model='mind_user_similarity',
+        signature_name='serving_default'):
 
-    channel = grpc.insecure_channel('{host}:{port}'.format(host=host, port=port))
+    channel = grpc.insecure_channel('{host}:{port}'.format(host=host,
+                                                           port=port))
     stub = prediction_service_pb2_grpc.PredictionServiceStub(channel)
 
     start = time.time()
@@ -246,12 +284,16 @@ def run(host='10.254.64.251', port='8504', model='mind_user_similarity', signatu
     request.model_spec.signature_name = signature_name
     request.inputs['user_id'].CopyFrom(make_tensor_proto(d['user_id']))
     request.inputs['user_type'].CopyFrom(make_tensor_proto(d['user_type']))
-    request.inputs['member_level'].CopyFrom(make_tensor_proto(d['member_level']))
-    request.inputs['hist_item_id'].CopyFrom(make_tensor_proto(d['hist_item_id']))
+    request.inputs['member_level'].CopyFrom(
+        make_tensor_proto(d['member_level']))
+    request.inputs['hist_item_id'].CopyFrom(
+        make_tensor_proto(d['hist_item_id']))
     request.inputs['hist_len'].CopyFrom(make_tensor_proto(d['hist_len']))
-    request.inputs['item_id'].CopyFrom(make_tensor_proto(np.concatenate([d['item_id'], d['neg_item_id']], axis=-1)))
+    request.inputs['item_id'].CopyFrom(
+        make_tensor_proto(
+            np.concatenate([d['item_id'], d['neg_item_id']], axis=-1)))
 
-#     print(request)
+    #     print(request)
     result = stub.Predict(request, 10.0)
 
     end = time.time()

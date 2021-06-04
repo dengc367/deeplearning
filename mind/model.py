@@ -4,6 +4,7 @@ import tensorflow as tf
 from absl import logging
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, Input, concatenate
+from tensorflow.python.keras.layers.core import Lambda
 from core.base_model import BaseModel
 from mind.layers import SequencePoolingLayer, CapsuleLayer, LabelAwareAttention
 from mind.features import Feature, FeatureBuilder, SparseFeature
@@ -127,9 +128,9 @@ class MIND(BaseModel):
         norm_item_embeddings = tf.nn.l2_normalize(item_embeddings, axis=-1, name='norm_item')
 
         probs = tf.einsum('ijk,ilk->ijl', norm_user_embedding, norm_item_embeddings)
-        sorted_probs = tf.sort(probs, axis=-1, direction='DESCENDING')
-        sorted_probs = tf.keras.layers.Lambda(lambda x: x, name='probs')(sorted_probs)
-        sorted_index = tf.argsort(probs, axis=-1, direction='DESCENDING', stable=True)
-        sorted_index = tf.keras.layers.Lambda(lambda x: x, name='indices')(sorted_index)
+
+        sorted_probs = Lambda(lambda x: tf.sort(x, axis=-1, direction='DESCENDING'), name='probs')(probs)
+        sorted_index = Lambda(lambda x: tf.argsort(x, axis=-1, direction='DESCENDING', stable=True),  name='indices')(probs)
+
         serving_model = Model(inputs=user_input + list(item_inputs.values()), outputs={'probs': sorted_probs, 'indices': sorted_index}, name='serving_model')
         return serving_model

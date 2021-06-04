@@ -1,0 +1,4 @@
+[submodule "main"]
+	path = thirdparty/DeepCTR
+	url = https://github.com/dengc367/DeepCTR
+	branch = main
